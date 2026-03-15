@@ -1,0 +1,17 @@
+# HDD wipe with real-time progress and abort support
+log_info "Action : Effacement NIST HDD en cours..."
+DISK_BYTES=$(blockdev --getsize64 "$DISK")
+
+# Run dd in background and save PID
+dd if=/dev/zero bs=1M count=$(($DISK_BYTES / 1024 / 1024)) 2>/dev/null | pv -s $DISK_BYTES | dd of="$DISK" bs=1M conv=notrunc status=none &
+DD_PID=$!
+
+# Monitor for keypress 'q' to abort
+echo -e "\nAppuyez sur 'q' puis Enter pour annuler le wipe..."
+while kill -0 $DD_PID 2>/dev/null; do
+    read -t 1 -n 1 key
+    if [[ "$key" == "q" ]]; then
+        kill -SIGINT $DD_PID
+        log_info "Effacement annulé par l'utilisateur !"
+        wait $DD_PID 2>/dev/null
+        break
