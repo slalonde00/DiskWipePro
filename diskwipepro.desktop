@@ -1,0 +1,8 @@
+[Desktop Entry]
+Encoding=UTF-8
+Name=Disk Wipe Pro
+Comment=Drag and drop a folder onto this to process it
+Exec ~/Desktop/nist-wipe.sh "%U"
+Icon=utilities-terminal # You can change this to a preferred icon
+Type=Application
+Terminal=true
