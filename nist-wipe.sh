@@ -3,8 +3,31 @@ set -euo pipefail
 
 # --- FORCE TERMINAL (for double-click) ---
 if [[ -z "${TERM:-}" ]]; then
-    x-terminal-emulator -e sudo bash "$0 $*"
+    if command -v gnome-terminal &>/dev/null; then
+        gnome-terminal -- bash "$0" "$@"
+    elif command -v xfce4-terminal &>/dev/null; then
+        xfce4-terminal -e "bash $0 $*"
+    else
+        echo "Terminal non détecté. Exécutez depuis un terminal."
+        exit 1
+    fi
     exit
+fi
+
+# --- DEPENDENCIES ---
+# Ensure required commands exist: dd, sha256sum, blkdiscard, nvme
+REQUIRED_CMDS=(dd sha256sum blkdiscard nvme)
+MISSING_CMDS=()
+for cmd in "${REQUIRED_CMDS[@]}"; do
+    if ! command -v $cmd &>/dev/null; then
+        MISSING_CMDS+=("$cmd")
+    fi
+done
+
+if [ ${#MISSING_CMDS[@]} -gt 0 ]; then
+    echo -e "\e[33mInstallation des dépendances manquantes : ${MISSING_CMDS[*]}\e[0m"
+    apt update
+    apt install -y "${MISSING_CMDS[@]}"
 fi
 
 # --- REQUIRE ROOT ---
@@ -36,12 +59,11 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-# --- GET ROOT DISK ---
+# --- GET ROOT DISK (live USB detection) ---
 ROOT_DISK=$(findmnt -no SOURCE / | sed 's/[0-9]*$//')
 
 # --- INTERACTIVE MODE ---
 if [[ "$MODE" == "interactive" ]]; then
-
     echo -e "\e[36m=== CONFIGURATION DE L'AUDIT ===\e[0m"
     read -p "Email pour identification (logs locaux) : " GPG_USER
 
@@ -49,7 +71,7 @@ if [[ "$MODE" == "interactive" ]]; then
 
     mapfile -t DISK_LIST < <(lsblk -dno NAME,SIZE,ROTA,TYPE,MODEL | grep -v "loop" || true)
 
-    echo "0) TOUS LES DISQUES (sauf OS)"
+    echo "0) TOUS LES DISQUES (sauf OS live USB)"
     for i in "${!DISK_LIST[@]}"; do
         echo "$((i+1))) ${DISK_LIST[$i]}"
     done
@@ -66,7 +88,6 @@ if [[ "$MODE" == "interactive" ]]; then
         DISK_NAME=$(echo "${DISK_LIST[$INDEX]}" | awk '{print $1}')
         SELECTED_DISKS="/dev/$DISK_NAME"
     fi
-
 fi
 
 # --- ALL MODE ---
@@ -91,14 +112,6 @@ if [[ "$CONFIRM" != "ERASE" ]]; then
     exit 0
 fi
 
-# --- DEPENDENCIES ---
-for cmd in pv sha256sum; do
-    if ! command -v $cmd &>/dev/null; then
-        echo "$cmd manquant → installation..."
-        apt update && apt install -y $cmd
-    fi
-done
-
 # --- WIPE HDD ---
 wipe_hdd() {
     local DISK="$1"
@@ -110,39 +123,26 @@ wipe_hdd() {
         INPUT="/dev/urandom"
         [[ $PASS -eq 3 ]] && INPUT="/dev/zero"
 
-        dd if="$INPUT" bs=1M status=none | \
-        pv -s "$SIZE" | \
-        dd of="$DISK" bs=1M conv=notrunc status=none &
-        
-        PID=$!
+        echo "Effacement en cours... (passe $PASS)"
+        dd if="$INPUT" of="$DISK" bs=4M status=progress conv=notrunc
 
-        echo "Appuyez sur q + Enter pour annuler"
-
-        while kill -0 $PID 2>/dev/null; do
-            read -t 1 -n 1 key || true
-            if [[ "$key" == "q" ]]; then
-                kill -9 $PID
-                echo "Annulé"
-                return
-            fi
-        done
-
-        wait $PID
+        echo "Passe $PASS terminée."
     done
 
-    echo "Vérification..."
-    HASH=$(dd if="$DISK" bs=1M status=none | sha256sum | awk '{print $1}')
+    echo "Vérification SHA256..."
+    HASH=$(dd if="$DISK" bs=4M status=none | sha256sum | awk '{print $1}')
     echo "SHA256: $HASH"
 }
 
 # --- WIPE SSD/NVMe ---
 wipe_nvme() {
     local DISK="$1"
-
     if command -v nvme &>/dev/null; then
+        echo "Format NVMe via nvme-cli..."
         nvme format "$DISK" --ses=2 --force || nvme format "$DISK" --ses=1 --force
     else
-        blkdiscard "$DISK" || echo "Échec blkdiscard"
+        echo "Utilisation de blkdiscard..."
+        blkdiscard "$DISK" || echo "Échec blkdiscard (vérifiez support matériel)"
     fi
 }
 
